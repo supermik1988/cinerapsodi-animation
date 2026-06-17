@@ -282,7 +282,9 @@ function tickParticle(p) {
     case 1: {
       let bx = p.target.x + sin(t * 1.2 + p.phase) * 2.5;
       let by = p.target.y + cos(t * 0.9 + p.phase) * 2.5;
-      p.acc.add(createVector(bx - p.pos.x, by - p.pos.y).mult(CFG.attractSpeed));
+      let attract = createVector(bx - p.pos.x, by - p.pos.y).mult(CFG.attractSpeed);
+      if (attract.mag() > 3.5) attract.setMag(3.5); // cap: il mouse vince sempre
+      p.acc.add(attract);
       p.repel(mousePos);
       p.vel.mult(CFG.dampingNormal);
       let dt  = p.distToTarget();
