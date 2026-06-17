@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cinerapsodi — Logo Animation v9</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; width: 100vw; height: 100vh; }
+    canvas { display: block; }
+    #hud {
+      position: fixed; top: 12px; left: 16px;
+      color: rgba(255,255,255,0.4);
+      font: 12px/1.5 monospace;
+      pointer-events: none; user-select: none; z-index: 10;
+    }
+    #hint {
+      position: fixed; bottom: 18px; left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.2);
+      font: 11px monospace;
+      pointer-events: none; white-space: nowrap; z-index: 10;
+    }
+  </style>
+</head>
+<body>
+<div id="hud"></div>
+<div id="hint">doppio click = esplodi &nbsp;|&nbsp; 1·2·3·4 modalità &nbsp;|&nbsp; SPACE pausa &nbsp;|&nbsp; R reset &nbsp;|&nbsp; B glow &nbsp;|&nbsp; rotella = zoom</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script>
+'use strict';
+
+const LOGO_URL = 'logo.png';
+
+const CFG = {
+  sampling       : 3,
+  repulsionR     : 90,
+  repulsionStr   : 5.5,
+  noiseScale     : 0.003,
+  noiseTimeScale : 0.4,
+  explosionForce : 10.0,
+  focalLength    : 900,
+  glowAlpha      : 120,
+  attractSpeed   : 0.13,
+  dampingNormal  : 0.82,
+
+  dblForce       : 55,
+  dblMinForce    : 20,
+  dblRandomness  : 10,
+  dblFriction    : 0.982,
+  dblBounce      : 0.72,
+  dblAttractFast : 0.0,
+  dblAttractSlow : 0.12,
+  reformThresh   : 0.6,
+
+  // Pixel di sfondo
+  bgCount        : 3000,   // totale (1000 per colore)
+  bgSpeedMax     : 1.2,    // velocità massima px/frame
+  bgNoiseScale   : 0.0025, // scala campo di flusso
+  bgNoiseTime    : 0.25,   // velocità temporale del rumore
+  bgAlphaMin     : 60,
+  bgAlphaMax     : 180,
+};
+
+// Palette sfondo — 3 colori bilanciati
+const BG_COLORS = [
+  [0,   77,  216], // #004dd8 blu
+  [255, 253, 89],  // #fffd59 giallo
+  [236, 31,  8],   // #ec1f08 rosso
+];
+
+let particles  = [];
+let bgParticles = [];
+let pgMain, pgBlur, pgBg;
+let logoImg;
+let t = 0;
+let mousePos;
+let sizeScale  = 1.0;
+let mode       = 1;
+let paused     = false;
+let glowOn     = true;
+let closestIdx = -1;
+let exploding  = false, attracting = false;
+let rotY = 0, rotX = 0, autoSpin = false, spinV = 0;
+let clickPhase = 'normal';
+
+// ── Pixel di sfondo ─────────────────────────────────────────────
+class BgParticle {
+  constructor(colorIdx) {
+    this.col   = BG_COLORS[colorIdx];
+    this.pos   = createVector(random(width), random(height));
+    this.vel   = p5.Vector.random2D().mult(random(0.2, CFG.bgSpeedMax));
+    this.sz    = random(1.0, 5.0);   // stessa range dei pixel logo
+    this.alpha = random(CFG.bgAlphaMin, CFG.bgAlphaMax);
+    this.noiseOffX = random(1000);
+    this.noiseOffY = random(1000);
+    this.phase = random(TWO_PI);
+  }
+
+  update(t) {
+    // Campo di flusso Perlin indipendente per ogni pixel
+    let nx    = noise(this.pos.x * CFG.bgNoiseScale + this.noiseOffX, this.pos.y * CFG.bgNoiseScale, t * CFG.bgNoiseTime);
+    let ny    = noise(this.pos.x * CFG.bgNoiseScale, this.pos.y * CFG.bgNoiseScale + this.noiseOffY, t * CFG.bgNoiseTime + 100);
+    let angle = (nx - 0.5) * TWO_PI * 2.0;
+    let str   = (ny - 0.5) * 0.3;
+    this.vel.add(p5.Vector.fromAngle(angle).mult(str));
+    this.vel.limit(CFG.bgSpeedMax);
+    this.pos.add(this.vel);
+
+    // Alpha pulsante lenta
+    this.alpha = map(sin(t * 0.8 + this.phase), -1, 1, CFG.bgAlphaMin, CFG.bgAlphaMax);
+
+    // Wrap ai bordi
+    const m = 10;
+    if (this.pos.x < -m)         this.pos.x = width  + m;
+    if (this.pos.x > width  + m) this.pos.x = -m;
+    if (this.pos.y < -m)         this.pos.y = height + m;
+    if (this.pos.y > height + m) this.pos.y = -m;
+  }
+
+  draw(g) {
+    g.noStroke();
+    g.fill(this.col[0], this.col[1], this.col[2], this.alpha);
+    g.rectMode(CENTER);
+    g.rect(this.pos.x, this.pos.y, this.sz, this.sz, 1);
+  }
+}
+
+function buildBgParticles() {
+  bgParticles = [];
+  let perColor = Math.floor(CFG.bgCount / BG_COLORS.length);
+  for (let c = 0; c < BG_COLORS.length; c++) {
+    for (let i = 0; i < perColor; i++) {
+      bgParticles.push(new BgParticle(c));
+    }
+  }
+}
+
+// ── Classe Particella logo ──────────────────────────────────────
+class Particle {
+  constructor(tx, ty, sz) {
+    this.target = createVector(tx, ty);
+    this.size   = sz;
+    this.phase  = random(TWO_PI);
+    this.ox     = tx - width  * 0.5;
+    this.oy     = ty - height * 0.5;
+    this.oz     = random(-250, 250);
+    this.sx = tx; this.sy = ty; this.ss = sz;
+    this.pos   = createVector(random(width), random(height));
+    this.vel   = createVector(0, 0);
+    this.acc   = createVector(0, 0);
+    this.alpha = random(40, 120);
+  }
+
+  updateNormal() {
+    this.vel.add(this.acc);
+    this.vel.limit(8);
+    this.pos.add(this.vel);
+    this.acc.set(0, 0);
+  }
+
+  updateBounce() {
+    this.vel.add(this.acc);
+    this.pos.add(this.vel);
+    this.acc.set(0, 0);
+    if (this.pos.x <= 0)     { this.pos.x = 0;      this.vel.x =  abs(this.vel.x) * CFG.dblBounce; }
+    else if (this.pos.x >= width)  { this.pos.x = width;  this.vel.x = -abs(this.vel.x) * CFG.dblBounce; }
+    if (this.pos.y <= 0)     { this.pos.y = 0;      this.vel.y =  abs(this.vel.y) * CFG.dblBounce; }
+    else if (this.pos.y >= height) { this.pos.y = height; this.vel.y = -abs(this.vel.y) * CFG.dblBounce; }
+  }
+
+  repel(mp) {
+    let d = p5.Vector.dist(this.pos, mp);
+    if (d < CFG.repulsionR && d > 0) {
+      let f = p5.Vector.sub(this.pos, mp);
+      f.normalize().mult((CFG.repulsionR - d) * CFG.repulsionStr * 0.01);
+      this.vel.add(f);
+    }
+  }
+
+  vortex(mp) {
+    let d = p5.Vector.dist(this.pos, mp);
+    if (d < 180 && d > 0) {
+      let a = atan2(this.pos.y - mp.y, this.pos.x - mp.x) + HALF_PI;
+      this.acc.add(p5.Vector.fromAngle(a).mult(map(d, 0, 180, 2.5, 0) * 0.3));
+    }
+  }
+
+  wrap() {
+    const m = 20;
+    if (this.pos.x < -m)         this.pos.x = width  + m;
+    if (this.pos.x > width  + m) this.pos.x = -m;
+    if (this.pos.y < -m)         this.pos.y = height + m;
+    if (this.pos.y > height + m) this.pos.y = -m;
+  }
+
+  project(rY, rX) {
+    let cosY = cos(rY), sinY = sin(rY);
+    let rx   = this.ox * cosY - this.oz * sinY;
+    let rz   = this.ox * sinY + this.oz * cosY;
+    let cosX = cos(rX), sinX = sin(rX);
+    let ry2  = this.oy * cosX - rz  * sinX;
+    let rzz  = this.oy * sinX + rz  * cosX;
+    let sc   = CFG.focalLength / (CFG.focalLength + rzz);
+    this.sx  = width * 0.5 + rx * sc;
+    this.sy  = height * 0.5 + ry2 * sc;
+    this.ss  = this.size * sc * sizeScale;
+    this.alpha = map(rzz, -250, 250, 80, 255);
+  }
+
+  draw(g, is3D) {
+    let s  = is3D ? this.ss  : this.size * sizeScale;
+    let px = is3D ? this.sx  : this.pos.x;
+    let py = is3D ? this.sy  : this.pos.y;
+    g.noStroke();
+    g.fill(255, 255, 255, this.alpha);
+    g.rectMode(CENTER);
+    g.rect(px, py, max(s, 0.5), max(s, 0.5), 1.5);
+  }
+
+  speed()        { return this.vel.mag(); }
+  distToTarget() { return p5.Vector.dist(this.pos, this.target); }
+}
+
+// ── Build particelle logo ───────────────────────────────────────
+function buildParticles() {
+  particles = [];
+  if (!logoImg) return;
+  let lh = height * 0.70;
+  let sc = lh / logoImg.height;
+  let lw = logoImg.width * sc;
+  let ox = (width - lw) * 0.5;
+  let oy = (height - lh) * 0.5;
+  logoImg.loadPixels();
+  for (let py = 0; py < logoImg.height; py += CFG.sampling) {
+    for (let px = 0; px < logoImg.width; px += CFG.sampling) {
+      let idx = (py * logoImg.width + px) * 4;
+      let r   = logoImg.pixels[idx];
+      let g2  = logoImg.pixels[idx + 1];
+      let b   = logoImg.pixels[idx + 2];
+      let a   = logoImg.pixels[idx + 3];
+      let br  = (r + g2 + b) / 3.0;
+      if (br <= 50 && !(a > 128 && br > 30)) continue;
+      let tx = ox + px * sc;
+      let ty = oy + py * sc;
+      let sz = map(br > 50 ? br : 200, 50, 255, 1.0, 7.0);
+      particles.push(new Particle(tx, ty, sz));
+    }
+  }
+  console.log('Logo px:', particles.length, '| Bg px:', bgParticles.length);
+}
+
+// ── Esplosione ──────────────────────────────────────────────────
+function triggerExplosion(cx, cy) {
+  clickPhase = 'exploding';
+  let origin = createVector(cx, cy);
+  let diag   = sqrt(width * width + height * height);
+  for (let p of particles) {
+    let dir = p5.Vector.sub(p.pos, origin);
+    let d   = dir.mag();
+    let str = map(d, 0, diag * 0.5, CFG.dblForce, CFG.dblMinForce);
+    str     = max(str, CFG.dblMinForce) * random(0.85, 1.15);
+    if (d < 1) dir = p5.Vector.random2D();
+    dir.normalize().mult(str);
+    dir.x += random(-CFG.dblRandomness, CFG.dblRandomness);
+    dir.y += random(-CFG.dblRandomness, CFG.dblRandomness);
+    p.vel.set(dir);
+    p.alpha = 255;
+  }
+}
+
+// ── Verifica riformazione ───────────────────────────────────────
+function checkReform() {
+  if (clickPhase !== 'exploding') return;
+  let total = 0, count = 0;
+  for (let i = 0; i < particles.length; i += 4) {
+    total += particles[i].speed();
+    count++;
+  }
+  if (count > 0 && total / count < CFG.reformThresh) {
+    clickPhase = 'normal';
+  }
+}
+
+function updateRotation3D() {
+  if (autoSpin) {
+    rotY += spinV; spinV *= 0.995;
+    if (abs(spinV) < 0.0001) autoSpin = false;
+  } else {
+    rotY = lerp(rotY, map(mouseX, 0, width,  -PI/4, PI/4), 0.05);
+    rotX = lerp(rotX, map(mouseY, 0, height, -PI/6, PI/6), 0.05);
+  }
+}
+
+// ── Fisica logo ─────────────────────────────────────────────────
+function tickParticle(p) {
+  if (clickPhase === 'exploding') {
+    p.vel.mult(CFG.dblFriction);
+    let spd  = p.speed();
+    let pull = map(spd, CFG.reformThresh, CFG.dblForce * 0.5, CFG.dblAttractSlow, CFG.dblAttractFast);
+    pull     = constrain(pull, CFG.dblAttractFast, CFG.dblAttractSlow);
+    if (pull > 0.001) p.acc.add(p5.Vector.sub(p.target, p.pos).mult(pull));
+    let dt = p.distToTarget();
+    p.alpha = lerp(p.alpha, map(constrain(dt, 0, 400), 0, 400, 240, 40), 0.03);
+    p.repel(mousePos);
+    p.updateBounce();
+    return;
+  }
+
+  switch (mode) {
+    case 1: {
+      let bx = p.target.x + sin(t * 1.2 + p.phase) * 2.5;
+      let by = p.target.y + cos(t * 0.9 + p.phase) * 2.5;
+      let attract = createVector(bx - p.pos.x, by - p.pos.y).mult(CFG.attractSpeed);
+      if (attract.mag() > 3.5) attract.setMag(3.5);
+      p.acc.add(attract);
+      p.repel(mousePos);
+      p.vel.mult(CFG.dampingNormal);
+      let dt  = p.distToTarget();
+      p.alpha = lerp(p.alpha, map(constrain(dt, 0, 80), 0, 80, 255, 150), 0.08);
+      p.updateNormal();
+      break;
+    }
+    case 2: {
+      if (exploding) {
+        let ex = p5.Vector.sub(p.pos, mousePos);
+        let d  = ex.mag();
+        if (d < 300 && d > 0) {
+          ex.normalize().mult(map(d, 0, 300, CFG.explosionForce * 1.2, 0.5));
+          p.vel.add(ex);
+        }
+        p.vel.mult(random(0.95, 0.99));
+        p.alpha = constrain(map(p.distToTarget(), 0, 400, 255, 60), 60, 255);
+      } else if (attracting) {
+        p.acc.add(p5.Vector.sub(mousePos, p.pos).mult(0.05));
+        p.vel.mult(0.88); p.alpha = 200;
+      } else {
+        let h = p5.Vector.sub(p.target, p.pos);
+        h.mult(0.06 + p.size * 0.002);
+        p.acc.add(h); p.vel.mult(0.86);
+        let dt  = p.distToTarget();
+        p.alpha = constrain(dt < 5 ? 255 : map(dt, 5, 500, 255, 40), 40, 255);
+      }
+      p.updateNormal();
+      break;
+    }
+    case 3: {
+      let angle = noise(p.pos.x*CFG.noiseScale, p.pos.y*CFG.noiseScale, t*CFG.noiseTimeScale) * TWO_PI * 2.5;
+      p.acc.add(p5.Vector.fromAngle(angle).mult(0.6));
+      p.vel.limit(3.5); p.vel.mult(0.98);
+      let dt = p5.Vector.dist(p.pos, p.target);
+      if (dt < 35) { p.acc.add(p5.Vector.sub(p.target, p.pos).mult(0.08)); p.vel.mult(0.85); }
+      p.wrap(); p.vortex(mousePos);
+      p.alpha = constrain(map(dt, 0, 200, 220, 120), 100, 230);
+      p.updateNormal();
+      break;
+    }
+    case 4: { p.project(rotY, rotX); break; }
+  }
+}
+
+// ── p5.js ───────────────────────────────────────────────────────
+function preload() {
+  logoImg = loadImage(LOGO_URL, () => {}, () => { logoImg = makeFallback(); });
+}
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  pixelDensity(1); frameRate(60);
+  pgMain = createGraphics(width, height);
+  pgBlur = createGraphics(width, height);
+  pgBg   = createGraphics(width, height);
+  pgMain.pixelDensity(1); pgBlur.pixelDensity(1); pgBg.pixelDensity(1);
+  mousePos = createVector(width * 0.5, height * 0.5);
+  buildBgParticles();
+  buildParticles();
+}
+
+function draw() {
+  if (!paused) {
+    t += 1.0 / 60.0;
+    if (mode === 4) updateRotation3D();
+    checkReform();
+  }
+
+  let is3D = (mode === 4);
+  closestIdx = -1; let cDist = 1e9;
+
+  // Aggiorna e disegna pixel di sfondo
+  pgBg.clear();
+  if (!paused) {
+    for (let b of bgParticles) {
+      b.update(t);
+      b.draw(pgBg);
+    }
+  } else {
+    for (let b of bgParticles) b.draw(pgBg);
+  }
+
+  // Aggiorna pixel logo
+  if (!paused) {
+    for (let i = 0; i < particles.length; i++) {
+      tickParticle(particles[i]);
+      let p  = particles[i];
+      let px = is3D ? p.sx : p.pos.x;
+      let py = is3D ? p.sy : p.pos.y;
+      let d  = dist(px, py, mouseX, mouseY);
+      if (d < cDist) { cDist = d; closestIdx = i; }
+    }
+  }
+
+  // Disegna pixel logo su pgMain
+  pgMain.clear(); pgMain.rectMode(CENTER);
+  for (let i = 0; i < particles.length; i++) {
+    let p = particles[i];
+    if (i === closestIdx) {
+      let px = is3D ? p.sx : p.pos.x, py = is3D ? p.sy : p.pos.y;
+      let ps = (is3D ? p.ss : p.size * sizeScale) * 3;
+      pgMain.noStroke(); pgMain.fill(255, 40);
+      pgMain.rect(px, py, ps*2, ps*2, 3);
+      pgMain.fill(255, constrain(p.alpha, 0, 255));
+      pgMain.rect(px, py, ps, ps, 1.5);
+    } else { p.draw(pgMain, is3D); }
+  }
+
+  // Compositing: sfondo → glow → logo
+  background(0);
+
+  if (glowOn) {
+    // Glow sfondo colorato (leggero)
+    pgBlur.clear(); pgBlur.image(pgBg, 0, 0); pgBlur.filter(BLUR, 6);
+    blendMode(ADD); tint(255, 70); image(pgBlur, 0, 0);
+
+    // Sfondo solido
+    blendMode(BLEND); tint(255, 255); image(pgBg, 0, 0);
+
+    // Glow logo bianco
+    pgBlur.clear(); pgBlur.image(pgMain, 0, 0); pgBlur.filter(BLUR, 8);
+    blendMode(ADD); tint(255, CFG.glowAlpha); image(pgBlur, 0, 0);
+    tint(255, 255);
+  } else {
+    image(pgBg, 0, 0);
+  }
+
+  // Logo in cima
+  blendMode(BLEND); image(pgMain, 0, 0);
+
+  let fase = clickPhase === 'exploding' ? '  💥 esplosione → riformazione' : '';
+  document.getElementById('hud').textContent =
+    `v9 · Modalità ${mode}  |  ${nf(frameRate(),0,0)} fps  |  logo ${particles.length} + bg ${bgParticles.length} px  |  Glow ${glowOn?'ON':'OFF'}${paused?'  PAUSA':''}${fase}`;
+}
+
+function mouseMoved()   { mousePos.set(mouseX, mouseY); }
+function mouseDragged() { mousePos.set(mouseX, mouseY); }
+function mousePressed() {
+  mousePos.set(mouseX, mouseY);
+  if (mode === 2 && clickPhase === 'normal') {
+    if (mouseButton === LEFT)  exploding = true;
+    if (mouseButton === RIGHT) { exploding = false; attracting = false; }
+  }
+  if (mode === 4 && mouseButton === LEFT) { autoSpin = true; spinV = 0.025; }
+  return false;
+}
+function mouseReleased() { if (mode === 2 && mouseButton === LEFT) exploding = false; }
+function doubleClicked() { triggerExplosion(mouseX, mouseY); return false; }
+function mouseWheel(e)   { sizeScale = constrain(sizeScale - e.delta*0.001, 0.3, 3.0); return false; }
+
+function keyPressed() {
+  if (keyCode === SHIFT && mode === 2) { attracting = true; exploding = false; }
+  switch (key) {
+    case '1': setMode(1); break; case '2': setMode(2); break;
+    case '3': setMode(3); break; case '4': setMode(4); break;
+    case ' ': paused = !paused; break;
+    case 'r': case 'R':
+      clickPhase = 'normal';
+      particles.forEach(p => { p.pos.set(random(width), random(height)); p.vel.set(0,0); p.alpha = random(40,120); });
+      break;
+    case 'b': case 'B': glowOn = !glowOn; break;
+    case '+': case '=': CFG.sampling = max(1, CFG.sampling-1); buildParticles(); break;
+    case '-': case '_': CFG.sampling = min(10, CFG.sampling+1); buildParticles(); break;
+    case 'f': case 'F': fullscreen(!fullscreen()); break;
+  }
+  if (key === ' ') return false;
+}
+function keyReleased() { if (keyCode === SHIFT) attracting = false; }
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+  pgMain.remove(); pgBlur.remove(); pgBg.remove();
+  pgMain = createGraphics(width, height);
+  pgBlur = createGraphics(width, height);
+  pgBg   = createGraphics(width, height);
+  pgMain.pixelDensity(1); pgBlur.pixelDensity(1); pgBg.pixelDensity(1);
+  buildBgParticles();
+  buildParticles();
+}
+function setMode(m) { mode = m; exploding = false; attracting = false; clickPhase = 'normal'; }
+function makeFallback() {
+  let pg = createGraphics(800, 300);
+  pg.background(0); pg.fill(255); pg.noStroke();
+  pg.textSize(150); pg.textAlign(CENTER, CENTER); pg.text('LOGO', 400, 155);
+  return pg;
+}
+</script>
+</body>
+</html>
