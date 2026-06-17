@@ -270,7 +270,10 @@ function tickParticle(p) {
     let dt = p.distToTarget();
     p.alpha = lerp(p.alpha, map(constrain(dt, 0, 400), 0, 400, 240, 40), 0.03);
 
-    // 4. Rimbalzo ai bordi — nessun escape
+    // 4. Repulsione mouse — coerente con modalità normale
+    p.repel(mousePos);
+
+    // 5. Rimbalzo ai bordi — nessun escape
     p.updateBounce();
     return;
   }
