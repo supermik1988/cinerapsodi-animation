@@ -229,14 +229,17 @@ function triggerExplosion(cx, cy) {
 }
 
 // ── Verifica riformazione ───────────────────────────────────────
+// Controlla la distanza media dal target: quando i pixel sono
+// tornati vicino al logo la fase passa a 'normal', indipendentemente
+// dalla velocità (l'attrazione potrebbe tenerli in oscillazione).
 function checkReform() {
   if (clickPhase !== 'exploding') return;
-  let total = 0, count = 0;
+  let totalDist = 0, count = 0;
   for (let i = 0; i < particles.length; i += 4) {
-    total += particles[i].speed();
+    totalDist += particles[i].distToTarget();
     count++;
   }
-  if (count > 0 && total / count < CFG.reformThresh) {
+  if (count > 0 && totalDist / count < 35) {
     clickPhase = 'normal';
   }
 }
