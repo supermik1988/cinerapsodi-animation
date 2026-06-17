@@ -56,11 +56,14 @@ const CFG = {
 
   // Pixel di sfondo
   bgCount        : 3000,   // totale (1000 per colore)
-  bgSpeedMax     : 1.2,    // velocità massima px/frame
-  bgNoiseScale   : 0.0025, // scala campo di flusso
-  bgNoiseTime    : 0.25,   // velocità temporale del rumore
-  bgAlphaMin     : 60,
-  bgAlphaMax     : 180,
+  bgSize         : 15,     // dimensione fissa px
+  bgSpeedMax     : 2.2,    // velocità massima px/frame
+  bgNoiseScale   : 0.0018, // scala campo di flusso
+  bgNoiseTime    : 0.35,   // velocità temporale del rumore
+  bgAlphaMin     : 80,
+  bgAlphaMax     : 220,
+  bgRepulsionR   : 110,    // raggio repulsione mouse
+  bgRepulsionStr : 6.0,    // forza repulsione mouse
 };
 
 // Palette sfondo — 3 colori bilanciati
@@ -88,31 +91,41 @@ let clickPhase = 'normal';
 // ── Pixel di sfondo ─────────────────────────────────────────────
 class BgParticle {
   constructor(colorIdx) {
-    this.col   = BG_COLORS[colorIdx];
-    this.pos   = createVector(random(width), random(height));
-    this.vel   = p5.Vector.random2D().mult(random(0.2, CFG.bgSpeedMax));
-    this.sz    = random(1.0, 5.0);   // stessa range dei pixel logo
-    this.alpha = random(CFG.bgAlphaMin, CFG.bgAlphaMax);
-    this.noiseOffX = random(1000);
-    this.noiseOffY = random(1000);
-    this.phase = random(TWO_PI);
+    this.col       = BG_COLORS[colorIdx];
+    this.pos       = createVector(random(width), random(height));
+    this.vel       = p5.Vector.random2D().mult(random(0.3, CFG.bgSpeedMax));
+    this.acc       = createVector(0, 0);
+    this.sz        = CFG.bgSize;     // dimensione fissa uguale per tutti
+    this.alpha     = random(CFG.bgAlphaMin, CFG.bgAlphaMax);
+    this.noiseOff  = random(10000);  // offset unico per campo di flusso personale
+    this.phase     = random(TWO_PI);
   }
 
-  update(t) {
-    // Campo di flusso Perlin indipendente per ogni pixel
-    let nx    = noise(this.pos.x * CFG.bgNoiseScale + this.noiseOffX, this.pos.y * CFG.bgNoiseScale, t * CFG.bgNoiseTime);
-    let ny    = noise(this.pos.x * CFG.bgNoiseScale, this.pos.y * CFG.bgNoiseScale + this.noiseOffY, t * CFG.bgNoiseTime + 100);
-    let angle = (nx - 0.5) * TWO_PI * 2.0;
-    let str   = (ny - 0.5) * 0.3;
-    this.vel.add(p5.Vector.fromAngle(angle).mult(str));
+  update(t, mp) {
+    // Campo di flusso Perlin — angolo e intensità indipendenti
+    let nx    = noise(this.pos.x * CFG.bgNoiseScale + this.noiseOff, this.pos.y * CFG.bgNoiseScale, t * CFG.bgNoiseTime);
+    let angle = nx * TWO_PI * 3.0;
+    this.acc.add(p5.Vector.fromAngle(angle).mult(0.18));
+
+    // Repulsione mouse
+    let dm = p5.Vector.dist(this.pos, mp);
+    if (dm < CFG.bgRepulsionR && dm > 0) {
+      let f = p5.Vector.sub(this.pos, mp);
+      f.normalize().mult((CFG.bgRepulsionR - dm) * CFG.bgRepulsionStr * 0.012);
+      this.acc.add(f);
+    }
+
+    this.vel.add(this.acc);
+    this.vel.mult(0.96);              // attrito morbido per fluidità
     this.vel.limit(CFG.bgSpeedMax);
     this.pos.add(this.vel);
+    this.acc.set(0, 0);
 
-    // Alpha pulsante lenta
-    this.alpha = map(sin(t * 0.8 + this.phase), -1, 1, CFG.bgAlphaMin, CFG.bgAlphaMax);
+    // Alpha pulsante personale
+    this.alpha = map(sin(t * 0.9 + this.phase), -1, 1, CFG.bgAlphaMin, CFG.bgAlphaMax);
 
     // Wrap ai bordi
-    const m = 10;
+    const m = CFG.bgSize;
     if (this.pos.x < -m)         this.pos.x = width  + m;
     if (this.pos.x > width  + m) this.pos.x = -m;
     if (this.pos.y < -m)         this.pos.y = height + m;
@@ -123,7 +136,7 @@ class BgParticle {
     g.noStroke();
     g.fill(this.col[0], this.col[1], this.col[2], this.alpha);
     g.rectMode(CENTER);
-    g.rect(this.pos.x, this.pos.y, this.sz, this.sz, 1);
+    g.rect(this.pos.x, this.pos.y, this.sz, this.sz, 2);
   }
 }
 
@@ -391,7 +404,7 @@ function draw() {
   pgBg.clear();
   if (!paused) {
     for (let b of bgParticles) {
-      b.update(t);
+      b.update(t, mousePos);
       b.draw(pgBg);
     }
   } else {
