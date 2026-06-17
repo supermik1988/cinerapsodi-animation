@@ -369,12 +369,12 @@ function draw() {
   pgMain.clear(); pgMain.rectMode(CENTER);
   for (let i = 0; i < particles.length; i++) {
     let p = particles[i];
-    if (i === closestIdx && clickPhase === 'normal') {
+    if (i === closestIdx) {
       let px = is3D ? p.sx : p.pos.x, py = is3D ? p.sy : p.pos.y;
       let ps = (is3D ? p.ss : p.size * sizeScale) * 3;
       pgMain.noStroke(); pgMain.fill(255, 40);
       pgMain.rect(px, py, ps*2, ps*2, 3);
-      pgMain.fill(255, 255); pgMain.rect(px, py, ps, ps, 1.5);
+      pgMain.fill(255, constrain(p.alpha, 0, 255)); pgMain.rect(px, py, ps, ps, 1.5);
     } else { p.draw(pgMain, is3D); }
   }
 
