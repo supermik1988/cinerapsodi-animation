@@ -17,7 +17,10 @@
   </script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #000; overflow: hidden; width: 100vw; height: 100vh; }
+    body {
+      background: #000 url('Sfondo.png') center center / cover no-repeat fixed;
+      overflow: hidden; width: 100vw; height: 100vh;
+    }
     canvas { display: block; }
     #hud {
       position: fixed; top: 12px; left: 16px;
@@ -394,7 +397,7 @@ function draw() {
     } else { p.draw(pgMain, is3D); }
   }
 
-  background(0);
+  clear(); // canvas trasparente — lo sfondo CSS è visibile
   if (glowOn) {
     pgBlur.clear(); pgBlur.image(pgMain, 0, 0); pgBlur.filter(BLUR, 8);
     blendMode(ADD); tint(255, CFG.glowAlpha); image(pgBlur, 0, 0);
