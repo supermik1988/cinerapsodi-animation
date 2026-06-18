@@ -1,0 +1,470 @@
+<!-- ============================================================
+     CINERAPSODI – Logo Animation v9 — Elementor HTML Widget
+
+     ISTRUZIONI:
+     1. Carica logo.png nella Media Library di WordPress
+     2. Sostituisci LOGO_URL_QUI con l'URL assoluto del logo
+        es: https://cinerapsodi.it/wp-content/uploads/2024/logo.png
+     3. Incolla questo codice nel widget "HTML" di Elementor
+        dentro la sezione Hero
+     ============================================================ -->
+
+<style>
+#cr-anim-wrap {
+  position: relative;
+  width: 100%;
+  height: 100vh;          /* altezza hero — puoi cambiare in px o vh */
+  overflow: hidden;
+  background: #000;
+}
+#cr-anim-wrap canvas {
+  display: block;
+  position: absolute;
+  top: 0; left: 0;
+}
+/* Nascondi HUD e hint nell'embed */
+#cr-hud, #cr-hint { display: none; }
+</style>
+
+<div id="cr-anim-wrap">
+  <div id="cr-hud"></div>
+  <div id="cr-hint"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script>
+(function() {
+'use strict';
+
+/* ▼▼▼ SOSTITUISCI CON L'URL REALE DEL LOGO ▼▼▼ */
+const LOGO_URL = 'LOGO_URL_QUI';
+/* ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲ */
+
+const WRAP_ID = 'cr-anim-wrap';
+
+const CFG = {
+  sampling       : 3,
+  repulsionR     : 90,
+  repulsionStr   : 5.5,
+  noiseScale     : 0.003,
+  noiseTimeScale : 0.4,
+  explosionForce : 10.0,
+  focalLength    : 900,
+  glowAlpha      : 120,
+  attractSpeed   : 0.13,
+  dampingNormal  : 0.82,
+  dblForce       : 55,
+  dblMinForce    : 20,
+  dblRandomness  : 10,
+  dblFriction    : 0.982,
+  dblBounce      : 0.72,
+  dblAttractFast : 0.0,
+  dblAttractSlow : 0.12,
+  reformThresh   : 0.6,
+  bgCount        : 3000,
+  bgSize         : 15,
+  bgSpeedMax     : 2.2,
+  bgNoiseScale   : 0.0018,
+  bgNoiseTime    : 0.35,
+  bgAlphaMin     : 80,
+  bgAlphaMax     : 220,
+  bgRepulsionR   : 110,
+  bgRepulsionStr : 6.0,
+};
+
+const BG_COLORS = [
+  [0,   77,  216],
+  [255, 253, 89],
+  [236, 31,  8],
+];
+
+new p5(function(sk) {
+  let particles   = [];
+  let bgParticles = [];
+  let pgMain, pgBlur, pgBg;
+  let logoImg;
+  let t           = 0;
+  let mousePos;
+  let sizeScale   = 1.0;
+  let mode        = 1;
+  let paused      = false;
+  let glowOn      = true;
+  let closestIdx  = -1;
+  let exploding   = false, attracting = false;
+  let rotY = 0, rotX = 0, autoSpin = false, spinV = 0;
+  let clickPhase  = 'normal';
+
+  function getWrap() { return document.getElementById(WRAP_ID); }
+
+  function W() { return getWrap().offsetWidth  || sk.windowWidth;  }
+  function H() { return getWrap().offsetHeight || sk.windowHeight; }
+
+  // ── Bg particle ──────────────────────────────────────────────
+  class BgParticle {
+    constructor(colorIdx) {
+      this.col      = BG_COLORS[colorIdx];
+      this.pos      = sk.createVector(sk.random(W()), sk.random(H()));
+      this.vel      = p5.Vector.random2D().mult(sk.random(0.3, CFG.bgSpeedMax));
+      this.acc      = sk.createVector(0, 0);
+      this.sz       = CFG.bgSize;
+      this.alpha    = sk.random(CFG.bgAlphaMin, CFG.bgAlphaMax);
+      this.noiseOff = sk.random(10000);
+      this.phase    = sk.random(sk.TWO_PI);
+    }
+    update(t, mp) {
+      let nx    = sk.noise(this.pos.x * CFG.bgNoiseScale + this.noiseOff, this.pos.y * CFG.bgNoiseScale, t * CFG.bgNoiseTime);
+      let angle = nx * sk.TWO_PI * 3.0;
+      this.acc.add(p5.Vector.fromAngle(angle).mult(0.18));
+      let dm = p5.Vector.dist(this.pos, mp);
+      if (dm < CFG.bgRepulsionR && dm > 0) {
+        let f = p5.Vector.sub(this.pos, mp);
+        f.normalize().mult((CFG.bgRepulsionR - dm) * CFG.bgRepulsionStr * 0.012);
+        this.acc.add(f);
+      }
+      this.vel.add(this.acc);
+      this.vel.mult(0.96);
+      this.vel.limit(CFG.bgSpeedMax);
+      this.pos.add(this.vel);
+      this.acc.set(0, 0);
+      this.alpha = sk.map(sk.sin(t * 0.9 + this.phase), -1, 1, CFG.bgAlphaMin, CFG.bgAlphaMax);
+      const m = CFG.bgSize;
+      if (this.pos.x < -m)       this.pos.x = W() + m;
+      if (this.pos.x > W() + m)  this.pos.x = -m;
+      if (this.pos.y < -m)       this.pos.y = H() + m;
+      if (this.pos.y > H() + m)  this.pos.y = -m;
+    }
+    draw(g) {
+      g.noStroke();
+      g.fill(this.col[0], this.col[1], this.col[2], this.alpha);
+      g.rectMode(sk.CENTER);
+      g.rect(this.pos.x, this.pos.y, this.sz, this.sz, 2);
+    }
+  }
+
+  function buildBgParticles() {
+    bgParticles = [];
+    let perColor = Math.floor(CFG.bgCount / BG_COLORS.length);
+    for (let c = 0; c < BG_COLORS.length; c++)
+      for (let i = 0; i < perColor; i++)
+        bgParticles.push(new BgParticle(c));
+  }
+
+  // ── Logo particle ─────────────────────────────────────────────
+  class Particle {
+    constructor(tx, ty, sz) {
+      this.target = sk.createVector(tx, ty);
+      this.size   = sz;
+      this.phase  = sk.random(sk.TWO_PI);
+      this.ox     = tx - W() * 0.5;
+      this.oy     = ty - H() * 0.5;
+      this.oz     = sk.random(-250, 250);
+      this.sx = tx; this.sy = ty; this.ss = sz;
+      this.pos    = sk.createVector(sk.random(W()), sk.random(H()));
+      this.vel    = sk.createVector(0, 0);
+      this.acc    = sk.createVector(0, 0);
+      this.alpha  = sk.random(40, 120);
+    }
+    updateNormal() {
+      this.vel.add(this.acc); this.vel.limit(8);
+      this.pos.add(this.vel); this.acc.set(0, 0);
+    }
+    updateBounce() {
+      this.vel.add(this.acc); this.pos.add(this.vel); this.acc.set(0, 0);
+      if (this.pos.x <= 0)      { this.pos.x = 0;    this.vel.x =  Math.abs(this.vel.x) * CFG.dblBounce; }
+      else if (this.pos.x >= W()) { this.pos.x = W(); this.vel.x = -Math.abs(this.vel.x) * CFG.dblBounce; }
+      if (this.pos.y <= 0)      { this.pos.y = 0;    this.vel.y =  Math.abs(this.vel.y) * CFG.dblBounce; }
+      else if (this.pos.y >= H()) { this.pos.y = H(); this.vel.y = -Math.abs(this.vel.y) * CFG.dblBounce; }
+    }
+    repel(mp) {
+      let d = p5.Vector.dist(this.pos, mp);
+      if (d < CFG.repulsionR && d > 0) {
+        let f = p5.Vector.sub(this.pos, mp);
+        f.normalize().mult((CFG.repulsionR - d) * CFG.repulsionStr * 0.01);
+        this.vel.add(f);
+      }
+    }
+    vortex(mp) {
+      let d = p5.Vector.dist(this.pos, mp);
+      if (d < 180 && d > 0) {
+        let a = sk.atan2(this.pos.y - mp.y, this.pos.x - mp.x) + sk.HALF_PI;
+        this.acc.add(p5.Vector.fromAngle(a).mult(sk.map(d, 0, 180, 2.5, 0) * 0.3));
+      }
+    }
+    wrap() {
+      const m = 20;
+      if (this.pos.x < -m)       this.pos.x = W() + m;
+      if (this.pos.x > W() + m)  this.pos.x = -m;
+      if (this.pos.y < -m)       this.pos.y = H() + m;
+      if (this.pos.y > H() + m)  this.pos.y = -m;
+    }
+    project(rY, rX) {
+      let cosY = sk.cos(rY), sinY = sk.sin(rY);
+      let rx   = this.ox * cosY - this.oz * sinY;
+      let rz   = this.ox * sinY + this.oz * cosY;
+      let cosX = sk.cos(rX), sinX = sk.sin(rX);
+      let ry2  = this.oy * cosX - rz  * sinX;
+      let rzz  = this.oy * sinX + rz  * cosX;
+      let sc   = CFG.focalLength / (CFG.focalLength + rzz);
+      this.sx  = W() * 0.5 + rx * sc;
+      this.sy  = H() * 0.5 + ry2 * sc;
+      this.ss  = this.size * sc * sizeScale;
+      this.alpha = sk.map(rzz, -250, 250, 80, 255);
+    }
+    draw(g, is3D) {
+      let s  = is3D ? this.ss  : this.size * sizeScale;
+      let px = is3D ? this.sx  : this.pos.x;
+      let py = is3D ? this.sy  : this.pos.y;
+      g.noStroke(); g.fill(255, 255, 255, this.alpha);
+      g.rectMode(sk.CENTER);
+      g.rect(px, py, Math.max(s, 0.5), Math.max(s, 0.5), 1.5);
+    }
+    speed()        { return this.vel.mag(); }
+    distToTarget() { return p5.Vector.dist(this.pos, this.target); }
+  }
+
+  function buildParticles() {
+    particles = [];
+    if (!logoImg) return;
+    let lh = H() * 0.70;
+    let sc = lh / logoImg.height;
+    let lw = logoImg.width * sc;
+    let ox = (W() - lw) * 0.5;
+    let oy = (H() - lh) * 0.5;
+    logoImg.loadPixels();
+    for (let py = 0; py < logoImg.height; py += CFG.sampling) {
+      for (let px = 0; px < logoImg.width; px += CFG.sampling) {
+        let idx = (py * logoImg.width + px) * 4;
+        let r   = logoImg.pixels[idx];
+        let g2  = logoImg.pixels[idx + 1];
+        let b   = logoImg.pixels[idx + 2];
+        let a   = logoImg.pixels[idx + 3];
+        let br  = (r + g2 + b) / 3.0;
+        if (br <= 50 && !(a > 128 && br > 30)) continue;
+        let tx = ox + px * sc;
+        let ty = oy + py * sc;
+        let sz = sk.map(br > 50 ? br : 200, 50, 255, 1.0, 7.0);
+        particles.push(new Particle(tx, ty, sz));
+      }
+    }
+  }
+
+  function triggerExplosion(cx, cy) {
+    clickPhase = 'exploding';
+    let origin = sk.createVector(cx, cy);
+    let diag   = Math.sqrt(W() * W() + H() * H());
+    for (let p of particles) {
+      let dir = p5.Vector.sub(p.pos, origin);
+      let d   = dir.mag();
+      let str = sk.map(d, 0, diag * 0.5, CFG.dblForce, CFG.dblMinForce);
+      str     = Math.max(str, CFG.dblMinForce) * sk.random(0.85, 1.15);
+      if (d < 1) dir = p5.Vector.random2D();
+      dir.normalize().mult(str);
+      dir.x += sk.random(-CFG.dblRandomness, CFG.dblRandomness);
+      dir.y += sk.random(-CFG.dblRandomness, CFG.dblRandomness);
+      p.vel.set(dir);
+      p.alpha = 255;
+    }
+  }
+
+  function checkReform() {
+    if (clickPhase !== 'exploding') return;
+    let total = 0, count = 0;
+    for (let i = 0; i < particles.length; i += 4) {
+      total += particles[i].speed(); count++;
+    }
+    if (count > 0 && total / count < CFG.reformThresh) clickPhase = 'normal';
+  }
+
+  function updateRotation3D() {
+    if (autoSpin) {
+      rotY += spinV; spinV *= 0.995;
+      if (Math.abs(spinV) < 0.0001) autoSpin = false;
+    } else {
+      rotY = sk.lerp(rotY, sk.map(sk.mouseX, 0, W(), -sk.PI/4, sk.PI/4), 0.05);
+      rotX = sk.lerp(rotX, sk.map(sk.mouseY, 0, H(), -sk.PI/6, sk.PI/6), 0.05);
+    }
+  }
+
+  function tickParticle(p) {
+    if (clickPhase === 'exploding') {
+      p.vel.mult(CFG.dblFriction);
+      let spd  = p.speed();
+      let pull = sk.map(spd, CFG.reformThresh, CFG.dblForce * 0.5, CFG.dblAttractSlow, CFG.dblAttractFast);
+      pull     = sk.constrain(pull, CFG.dblAttractFast, CFG.dblAttractSlow);
+      if (pull > 0.001) p.acc.add(p5.Vector.sub(p.target, p.pos).mult(pull));
+      let dt = p.distToTarget();
+      p.alpha = sk.lerp(p.alpha, sk.map(sk.constrain(dt, 0, 400), 0, 400, 240, 40), 0.03);
+      p.repel(mousePos);
+      p.updateBounce();
+      return;
+    }
+    switch (mode) {
+      case 1: {
+        let bx = p.target.x + sk.sin(t * 1.2 + p.phase) * 2.5;
+        let by = p.target.y + sk.cos(t * 0.9 + p.phase) * 2.5;
+        let attract = sk.createVector(bx - p.pos.x, by - p.pos.y).mult(CFG.attractSpeed);
+        if (attract.mag() > 3.5) attract.setMag(3.5);
+        p.acc.add(attract);
+        p.repel(mousePos);
+        p.vel.mult(CFG.dampingNormal);
+        let dt  = p.distToTarget();
+        p.alpha = sk.lerp(p.alpha, sk.map(sk.constrain(dt, 0, 80), 0, 80, 255, 150), 0.08);
+        p.updateNormal();
+        break;
+      }
+      case 2: {
+        if (exploding) {
+          let ex = p5.Vector.sub(p.pos, mousePos);
+          let d  = ex.mag();
+          if (d < 300 && d > 0) {
+            ex.normalize().mult(sk.map(d, 0, 300, CFG.explosionForce * 1.2, 0.5));
+            p.vel.add(ex);
+          }
+          p.vel.mult(sk.random(0.95, 0.99));
+          p.alpha = sk.constrain(sk.map(p.distToTarget(), 0, 400, 255, 60), 60, 255);
+        } else if (attracting) {
+          p.acc.add(p5.Vector.sub(mousePos, p.pos).mult(0.05));
+          p.vel.mult(0.88); p.alpha = 200;
+        } else {
+          let h = p5.Vector.sub(p.target, p.pos);
+          h.mult(0.06 + p.size * 0.002);
+          p.acc.add(h); p.vel.mult(0.86);
+          let dt  = p.distToTarget();
+          p.alpha = sk.constrain(dt < 5 ? 255 : sk.map(dt, 5, 500, 255, 40), 40, 255);
+        }
+        p.updateNormal();
+        break;
+      }
+      case 3: {
+        let angle = sk.noise(p.pos.x*CFG.noiseScale, p.pos.y*CFG.noiseScale, t*CFG.noiseTimeScale) * sk.TWO_PI * 2.5;
+        p.acc.add(p5.Vector.fromAngle(angle).mult(0.6));
+        p.vel.limit(3.5); p.vel.mult(0.98);
+        let dt = p5.Vector.dist(p.pos, p.target);
+        if (dt < 35) { p.acc.add(p5.Vector.sub(p.target, p.pos).mult(0.08)); p.vel.mult(0.85); }
+        p.wrap(); p.vortex(mousePos);
+        p.alpha = sk.constrain(sk.map(dt, 0, 200, 220, 120), 100, 230);
+        p.updateNormal();
+        break;
+      }
+      case 4: { p.project(rotY, rotX); break; }
+    }
+  }
+
+  sk.preload = function() {
+    logoImg = sk.loadImage(LOGO_URL, () => {}, () => { logoImg = makeFallback(); });
+  };
+
+  sk.setup = function() {
+    let cnv = sk.createCanvas(W(), H());
+    cnv.parent(WRAP_ID);
+    sk.pixelDensity(1); sk.frameRate(60);
+    pgMain = sk.createGraphics(W(), H());
+    pgBlur = sk.createGraphics(W(), H());
+    pgBg   = sk.createGraphics(W(), H());
+    pgMain.pixelDensity(1); pgBlur.pixelDensity(1); pgBg.pixelDensity(1);
+    mousePos = sk.createVector(W() * 0.5, H() * 0.5);
+    buildBgParticles();
+    buildParticles();
+  };
+
+  sk.draw = function() {
+    if (!paused) {
+      t += 1.0 / 60.0;
+      if (mode === 4) updateRotation3D();
+      checkReform();
+    }
+    let is3D = (mode === 4);
+    closestIdx = -1; let cDist = 1e9;
+    pgBg.clear();
+    if (!paused) {
+      for (let b of bgParticles) { b.update(t, mousePos); b.draw(pgBg); }
+    } else {
+      for (let b of bgParticles) b.draw(pgBg);
+    }
+    if (!paused) {
+      for (let i = 0; i < particles.length; i++) {
+        tickParticle(particles[i]);
+        let p  = particles[i];
+        let px = is3D ? p.sx : p.pos.x;
+        let py = is3D ? p.sy : p.pos.y;
+        let d  = sk.dist(px, py, sk.mouseX, sk.mouseY);
+        if (d < cDist) { cDist = d; closestIdx = i; }
+      }
+    }
+    pgMain.clear(); pgMain.rectMode(sk.CENTER);
+    for (let i = 0; i < particles.length; i++) {
+      let p = particles[i];
+      if (i === closestIdx) {
+        let px = is3D ? p.sx : p.pos.x, py = is3D ? p.sy : p.pos.y;
+        let ps = (is3D ? p.ss : p.size * sizeScale) * 3;
+        pgMain.noStroke(); pgMain.fill(255, 40);
+        pgMain.rect(px, py, ps*2, ps*2, 3);
+        pgMain.fill(255, sk.constrain(p.alpha, 0, 255));
+        pgMain.rect(px, py, ps, ps, 1.5);
+      } else { p.draw(pgMain, is3D); }
+    }
+    sk.background(0);
+    if (glowOn) {
+      pgBlur.clear(); pgBlur.image(pgBg, 0, 0); pgBlur.filter(sk.BLUR, 6);
+      sk.blendMode(sk.ADD); sk.tint(255, 70); sk.image(pgBlur, 0, 0);
+      sk.blendMode(sk.BLEND); sk.tint(255, 255); sk.image(pgBg, 0, 0);
+      pgBlur.clear(); pgBlur.image(pgMain, 0, 0); pgBlur.filter(sk.BLUR, 8);
+      sk.blendMode(sk.ADD); sk.tint(255, CFG.glowAlpha); sk.image(pgBlur, 0, 0);
+      sk.tint(255, 255);
+    } else {
+      sk.image(pgBg, 0, 0);
+    }
+    sk.blendMode(sk.BLEND); sk.image(pgMain, 0, 0);
+  };
+
+  sk.mouseMoved   = function() { mousePos.set(sk.mouseX, sk.mouseY); };
+  sk.mouseDragged = function() { mousePos.set(sk.mouseX, sk.mouseY); };
+  sk.mousePressed = function() {
+    mousePos.set(sk.mouseX, sk.mouseY);
+    if (mode === 2 && clickPhase === 'normal') {
+      if (sk.mouseButton === sk.LEFT)  exploding = true;
+      if (sk.mouseButton === sk.RIGHT) { exploding = false; attracting = false; }
+    }
+    if (mode === 4 && sk.mouseButton === sk.LEFT) { autoSpin = true; spinV = 0.025; }
+    return false;
+  };
+  sk.mouseReleased = function() { if (mode === 2 && sk.mouseButton === sk.LEFT) exploding = false; };
+  sk.doubleClicked = function() { triggerExplosion(sk.mouseX, sk.mouseY); return false; };
+  sk.mouseWheel    = function(e) { sizeScale = sk.constrain(sizeScale - e.delta*0.001, 0.3, 3.0); return false; };
+  sk.keyPressed    = function() {
+    if (sk.keyCode === sk.SHIFT && mode === 2) { attracting = true; exploding = false; }
+    switch (sk.key) {
+      case '1': setMode(1); break; case '2': setMode(2); break;
+      case '3': setMode(3); break; case '4': setMode(4); break;
+      case ' ': paused = !paused; break;
+      case 'r': case 'R':
+        clickPhase = 'normal';
+        particles.forEach(p => { p.pos.set(sk.random(W()), sk.random(H())); p.vel.set(0,0); p.alpha = sk.random(40,120); });
+        break;
+      case 'b': case 'B': glowOn = !glowOn; break;
+    }
+    if (sk.key === ' ') return false;
+  };
+  sk.keyReleased = function() { if (sk.keyCode === sk.SHIFT) attracting = false; };
+  sk.windowResized = function() {
+    sk.resizeCanvas(W(), H());
+    pgMain.remove(); pgBlur.remove(); pgBg.remove();
+    pgMain = sk.createGraphics(W(), H());
+    pgBlur = sk.createGraphics(W(), H());
+    pgBg   = sk.createGraphics(W(), H());
+    pgMain.pixelDensity(1); pgBlur.pixelDensity(1); pgBg.pixelDensity(1);
+    buildBgParticles();
+    buildParticles();
+  };
+
+  function setMode(m) { mode = m; exploding = false; attracting = false; clickPhase = 'normal'; }
+  function makeFallback() {
+    let pg = sk.createGraphics(800, 300);
+    pg.background(0); pg.fill(255); pg.noStroke();
+    pg.textSize(150); pg.textAlign(sk.CENTER, sk.CENTER); pg.text('LOGO', 400, 155);
+    return pg;
+  }
+}, document.getElementById('cr-anim-wrap'));
+
+})();
+</script>
