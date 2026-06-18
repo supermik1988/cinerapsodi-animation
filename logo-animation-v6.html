@@ -6,13 +6,18 @@
   <title>Cinerapsodi — Logo Animation v6</title>
   <script>
     // Nasconde HUD e hint se ?embed=1 nell'URL
-    if (new URLSearchParams(location.search).get('embed') === '1') {
+    const isEmbed = new URLSearchParams(location.search).get('embed') === '1';
+    if (isEmbed) {
       document.addEventListener('DOMContentLoaded', () => {
         const h = document.getElementById('hud');
         const n = document.getElementById('hint');
         if (h) h.style.display = 'none';
         if (n) n.style.display = 'none';
       });
+      // Inoltra eventi scroll alla pagina WordPress
+      window.addEventListener('wheel', e => {
+        window.parent.postMessage({ type: 'cinera-scroll', deltaY: e.deltaY }, '*');
+      }, { passive: true });
     }
   </script>
   <style>
